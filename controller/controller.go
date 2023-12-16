@@ -17,6 +17,7 @@ import (
 )
 
 var collection *mongo.Collection
+// var bookCollection *mongo.Collection
 
 func init() {
 	err := godotenv.Load(".env")
@@ -36,8 +37,10 @@ func init() {
 
 	dbName := os.Getenv("DBNAME")
     colName := os.Getenv("COLNAME")
+	// colName2 := os.Getenv("COLNAME2")
 
 	collection = client.Database(dbName).Collection(colName)
+	// bookCollection = client.Database(dbName).Collection(colName2)
 
 	fmt.Println("Collection istance is ready")
 }
@@ -83,43 +86,79 @@ func deleteAuthor(authorId string) {
 }
 
 // get author and return
-func getAuthor(authorId string) (model.Author, error) {
-    var author model.Author
+func getAuthor(authorId string) (model.AuthorWithBooks, error) {
+    var author model.AuthorWithBooks
 
     id, err := primitive.ObjectIDFromHex(authorId)
     if err != nil {
         return author, err
     }
-    filter := bson.M{"_id": id}
 
-    err = collection.FindOne(context.Background(), filter).Decode(&author)
+    pipeline := []bson.M{
+        {"$match": bson.M{"_id": id}},
+        {"$lookup": bson.M{
+            "from":         "bookList",
+            "localField":   "_id",
+            "foreignField": "author",
+            "as":           "booksInfo",
+        }},
+        {"$project": bson.M{
+            "_id":   1,
+            "name":  1,
+            "books": bson.M{"$map": bson.M{"input": "$booksInfo", "as": "book", "in": bson.M{"title": "$$book.title"}}},
+        }},
+    }
+
+    cursor, err := collection.Aggregate(context.Background(), pipeline)
     if err != nil {
         return author, err
+    }
+
+    if cursor.Next(context.Background()) {
+        if err := cursor.Decode(&author); err != nil {
+            return author, err
+        }
     }
 
     fmt.Println("Found a single document: ", author)
 
     return author, nil
 }
+
+
 // get all authors and return
-func getAllAuthors() []model.Author {
-	var authors []model.Author
+func getAllAuthors() []model.AuthorWithBooks {
+    var authors []model.AuthorWithBooks
 
-	cursor, err := collection.Find(context.Background(), bson.M{})
+    pipeline := []bson.M{
+        {"$lookup": bson.M{
+            "from":         "bookList",
+            "localField":   "_id",
+            "foreignField": "author",
+            "as":           "booksInfo",
+        }},
+        {"$project": bson.M{
+            "_id":   1,
+            "name":  1,
+            "books": bson.M{"$map": bson.M{"input": "$booksInfo", "as": "book", "in": bson.M{"title": "$$book.title"}}},
+        }},
+    }
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    cursor, err := collection.Aggregate(context.Background(), pipeline)
 
-	for cursor.Next(context.Background()) {
-		var author model.Author
-		cursor.Decode(&author)
-		authors = append(authors, author)
-	}
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	fmt.Println("Found a all documents: ", authors)
+    for cursor.Next(context.Background()) {
+        var author model.AuthorWithBooks
+        cursor.Decode(&author)
+        authors = append(authors, author)
+    }
 
-	return authors
+    fmt.Println("Found all documents: ", authors)
+
+    return authors
 }
 
 func GetAllAuthors(c *gin.Context) {
