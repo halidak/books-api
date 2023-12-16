@@ -17,7 +17,6 @@ import (
 )
 
 var collection *mongo.Collection
-// var bookCollection *mongo.Collection
 
 func init() {
 	err := godotenv.Load(".env")
@@ -37,10 +36,8 @@ func init() {
 
 	dbName := os.Getenv("DBNAME")
     colName := os.Getenv("COLNAME")
-	// colName2 := os.Getenv("COLNAME2")
 
 	collection = client.Database(dbName).Collection(colName)
-	// bookCollection = client.Database(dbName).Collection(colName2)
 
 	fmt.Println("Collection istance is ready")
 }

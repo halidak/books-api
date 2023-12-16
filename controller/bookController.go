@@ -104,7 +104,6 @@ func getBookWithAuthor(bookId string) (model.BookWithAuthor, error) {
     return bookWithAuthor, nil
 }
 
-	
 
 //get all book with author name
 func getAllBooksWithAuthors() []model.BookWithAuthor {
