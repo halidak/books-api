@@ -58,7 +58,6 @@ func insertBook(book model.Book, authorIDs []primitive.ObjectID) {
 
     fmt.Println("Inserted a single document: ", inserted.InsertedID)
 
-    // Add the book to the readingList collection for each author
     for _, authorID := range authorIDs {
         _, err := readingListCollection.UpdateOne(
             context.Background(),
@@ -70,7 +69,6 @@ func insertBook(book model.Book, authorIDs []primitive.ObjectID) {
         }
     }
 
-    // Add relationships between the book and each author in the bookAuthor table
     for _, authorID := range authorIDs {
         _, err := bookAuthor.InsertOne(context.Background(), bson.M{"book": inserted.InsertedID, "author": authorID})
         if err != nil {
@@ -88,24 +86,36 @@ func getBookWithAuthor(bookId string) (model.BookWithAuthor, error) {
 		return bookWithAuthor, err
 	}
 
-	pipeline := []bson.M{
-		{"$match": bson.M{"_id": id}},
-		{"$lookup": bson.M{
-			"from":         "readList",
-			"localField":   "author",
-			"foreignField": "_id",
-			"as":           "authorInfo",
-		}},
-		{"$unwind": "$authorInfo"},
-		{"$project": bson.M{
-			"_id":    1,
-			"title":  1,
-			"genre":  1,
-			"author": bson.M{"_id": "$authorInfo._id", "name": "$authorInfo.name"},
-			"read":   1,
-		}},
-	}
-
+    pipeline := []bson.M{
+        {"$match": bson.M{"_id": id}},
+        {"$lookup": bson.M{
+            "from":         "bookAuthor",
+            "localField":   "_id",
+            "foreignField": "book",
+            "as":           "bookAuthorRelations",
+        }},
+        {"$lookup": bson.M{
+            "from":         "readList",
+            "localField":   "bookAuthorRelations.author",
+            "foreignField": "_id",
+            "as":           "authors",
+        }},
+        {"$project": bson.M{
+            "_id":     1,
+            "title":   1,
+            "genre":   1,
+            "authors": bson.M{"$ifNull": []interface{}{
+                bson.M{"$map": bson.M{
+                    "input": "$authors",
+                    "as":    "author",
+                    "in": bson.M{"name": "$$author.name"},
+                }},
+                []model.AuthorInfo{},
+            }},
+            "read":    1,
+        }},
+    }
+    
 	cursor, err := bookCollection.Aggregate(context.Background(), pipeline)
 	if err != nil {
 		log.Fatal(err)
@@ -122,22 +132,28 @@ func getBookWithAuthor(bookId string) (model.BookWithAuthor, error) {
 func getAllBooksWithAuthors() []model.BookWithAuthor {
 	var booksWithAuthors []model.BookWithAuthor
 
-	pipeline := []bson.M{
-		{"$lookup": bson.M{
-			"from":         "readList",
-			"localField":   "author",
-			"foreignField": "_id",
-			"as":           "authorInfo",
-		}},
-		{"$unwind": "$authorInfo"},
-		{"$project": bson.M{
-			"_id":    1,
-			"title":  1,
-			"genre":  1,
-			"author": bson.M{"_id": "$authorInfo._id", "name": "$authorInfo.name"},
-			"read":   1,
-		}},
-	}
+    pipeline := []bson.M{
+        {"$lookup": bson.M{
+            "from":         "bookAuthor",
+            "localField":   "_id",
+            "foreignField": "book",
+            "as":           "bookAuthorRelations",
+        }},
+        {"$lookup": bson.M{
+            "from":         "readList",
+            "localField":   "bookAuthorRelations.author",
+            "foreignField": "_id",
+            "as":           "authorInfo",
+        }},
+        {"$unwind": "$authorInfo"},
+        {"$group": bson.M{
+            "_id": "$_id",
+            "title": bson.M{"$first": "$title"},
+            "genre": bson.M{"$first": "$genre"},
+            "read": bson.M{"$first": "$read"},
+            "authors": bson.M{"$push": bson.M{"_id": "$authorInfo._id", "name": "$authorInfo.name"}},
+        }},
+    }
 
 	cursor, err := bookCollection.Aggregate(context.Background(), pipeline)
 
@@ -155,32 +171,65 @@ func getAllBooksWithAuthors() []model.BookWithAuthor {
 }
 
 // update book
-func updateBook(bookId string, book model.Book) {
-	id, _ := primitive.ObjectIDFromHex(bookId)
-	filter := bson.M{"_id": id}
-	update := bson.M{"$set": bson.M{"title": book.Title, "genre": book.Genre, "read": book.Read}}
+func updateBook(bookID string, book model.Book, authors []primitive.ObjectID) {
+    id, _ := primitive.ObjectIDFromHex(bookID)
+    filter := bson.M{"_id": id}
+    update := bson.M{"$set": bson.M{"title": book.Title, "genre": book.Genre, "read": book.Read}}
 
-	result, err := bookCollection.UpdateOne(context.Background(), filter, update)
+    result, err := bookCollection.UpdateOne(context.Background(), filter, update)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    fmt.Println("Updated a single document: ", result.UpsertedID)
 
-	fmt.Println("Updated a single document: ", result.UpsertedID)
+    // Update authors
+    authorFilter := bson.M{"book": id}
+    authorUpdate := bson.M{"$set": bson.M{"author": authors}}
+
+    authorResult, err := bookAuthor.UpdateOne(context.Background(), authorFilter, authorUpdate)
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Updated authors: ", authorResult.ModifiedCount)
 }
+
 
 // delete book
 func deleteBook(bookId string) {
-	id, _ := primitive.ObjectIDFromHex(bookId)
-	filter := bson.M{"_id": id}
+    id, _ := primitive.ObjectIDFromHex(bookId)
+    filter := bson.M{"_id": id}
 
-	result, err := bookCollection.DeleteOne(context.Background(), filter)
+    // Delete the book from the books collection
+    result, err := bookCollection.DeleteOne(context.Background(), filter)
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	fmt.Println("Deleted a single document: ", result.DeletedCount)
+    fmt.Println("Deleted a single document: ", result.DeletedCount)
+
+    // Delete the book from the bookAuthor collection
+    authorFilter := bson.M{"book": id}
+    authorResult, err := bookAuthor.DeleteMany(context.Background(), authorFilter)
+
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Deleted from bookAuthor: ", authorResult.DeletedCount)
+
+    // Delete the book from the readingList collection
+    readListFilter := bson.M{"books": bson.M{"$in": []primitive.ObjectID{id}}}
+    update := bson.M{"$pull": bson.M{"books": id}}
+    readListResult, err := readingListCollection.UpdateMany(context.Background(), readListFilter, update)
+
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println("Deleted from readingList: ", readListResult.ModifiedCount)
 }
 
 func GetAllBooksWithAuthors(c *gin.Context) {
@@ -215,7 +264,6 @@ func CreateBook(c *gin.Context) {
         authorIDs[i] = authorID
     }
 
-    // Check if authors exist in the database
     if exist, err := authorsExist(authorIDs); err != nil {
         c.JSON(http.StatusInternalServerError, gin.H{"error": "Error checking author existence"})
         return
@@ -224,12 +272,10 @@ func CreateBook(c *gin.Context) {
         return
     }
 
-    // Call the function to insert the book
     insertBook(book, authorIDs)
 
     c.JSON(http.StatusOK, book)
 }
-
 
 func authorsExist(authorIDs []primitive.ObjectID) (bool, error) {
     filter := bson.M{"_id": bson.M{"$in": authorIDs}}
@@ -242,16 +288,36 @@ func authorsExist(authorIDs []primitive.ObjectID) (bool, error) {
     return count == int64(len(authorIDs)), nil
 }
 
-
 func UpdateBook(c *gin.Context) {
-	bookId := c.Param("bookId")
-	var book model.Book
-	if err := c.ShouldBindJSON(&book); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-	updateBook(bookId, book)
-	c.JSON(http.StatusOK, book)
+    bookId := c.Param("bookId")
+    var book model.Book
+    if err := c.ShouldBindJSON(&book); err != nil {
+        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+        return
+    }
+
+    authorIDs := make([]primitive.ObjectID, len(book.Authors))
+    for i, strID := range book.Authors {
+        authorID, err := primitive.ObjectIDFromHex(strID.Hex())
+        if err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid author ID"})
+            return
+        }
+        authorIDs[i] = authorID
+    }
+
+    // Check if authors exist in the database
+    if exist, err := authorsExist(authorIDs); err != nil {
+        c.JSON(http.StatusInternalServerError, gin.H{"error": "Error checking author existence"})
+        return
+    } else if !exist {
+        c.JSON(http.StatusBadRequest, gin.H{"error": "Some authors do not exist"})
+        return
+    }
+
+    updateBook(bookId, book, authorIDs)
+
+    c.JSON(http.StatusOK, book)
 }
 
 func DeleteBook(c *gin.Context) {
@@ -262,55 +328,46 @@ func DeleteBook(c *gin.Context) {
 
 // get all books from author
 func getAllBooksForAuthor(authorId primitive.ObjectID) []model.Book {
-	var books []model.Book
+    var bookAuthorLinks []model.BookAuthor
+    var books []model.Book
 
-	pipeline := []bson.M{
-		{"$match": bson.M{"author": authorId}},
-		{"$lookup": bson.M{
-			"from":         "readList",
-			"localField":   "author",
-			"foreignField": "_id",
-			"as":           "authorInfo",
-		}},
-		{"$unwind": "$authorInfo"},
-		{"$project": bson.M{
-			"_id":    1,
-			"title":  1,
-			"genre":  1,
-			"author": "$authorInfo.name",
-			"read":   1,
-		}},
-	}
+    linkFilter := bson.M{"author": authorId}
+    cursor, err := bookAuthor.Find(context.Background(), linkFilter)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	cursor, err := bookCollection.Aggregate(context.Background(), pipeline)
-	if err != nil {
-		log.Fatal(err)
-	}
+    for cursor.Next(context.Background()) {
+        var link model.BookAuthor
+        cursor.Decode(&link)
+        bookAuthorLinks = append(bookAuthorLinks, link)
+    }
 
-	for cursor.Next(context.Background()) {
-		var book model.Book
-		cursor.Decode(&book)
-		books = append(books, book)
-	}
+    for _, link := range bookAuthorLinks {
+        bookFilter := bson.M{"_id": link.Book}
+        var book model.Book
+        err := bookCollection.FindOne(context.Background(), bookFilter).Decode(&book)
+        if err != nil {
+            log.Fatal(err)
+        }
+        books = append(books, book)
+    }
 
-	return books
+    return books
 }
 
 // get all books from author
 func GetBooksForAuthor(c *gin.Context) {
 	authorId := c.Param("authorId")
 
-	// Convert authorId to ObjectID
 	objAuthorId, err := primitive.ObjectIDFromHex(authorId)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid author ID"})
 		return
 	}
 
-	// Call the function to get all books for the author
 	booksForAuthor := getAllBooksForAuthor(objAuthorId)
 
-	// Return the result as JSON
 	c.JSON(http.StatusOK, booksForAuthor)
 }
 
