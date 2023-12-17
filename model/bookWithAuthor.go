@@ -3,11 +3,11 @@ package model
 import "go.mongodb.org/mongo-driver/bson/primitive"
 
 type BookWithAuthor struct {
-	ID     primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
-	Title  string             `json:"title,omitempty" bson:"title,omitempty"`
-	Genre  string             `json:"genre,omitempty" bson:"genre,omitempty"`
-	Author AuthorInfo         `json:"author,omitempty" bson:"author,omitempty"`
-	Read   bool               `json:"read,omitempty" bson:"read,omitempty"`
+    ID     primitive.ObjectID `json:"_id,omitempty" bson:"_id,omitempty"`
+    Title  string             `json:"title,omitempty" bson:"title,omitempty"`
+    Genre  string             `json:"genre,omitempty" bson:"genre,omitempty"`
+    Authors []AuthorInfo      `json:"authors,omitempty" bson:"authors,omitempty"`
+    Read   bool               `json:"read,omitempty" bson:"read,omitempty"`
 }
 
 type AuthorInfo struct {
