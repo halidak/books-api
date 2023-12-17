@@ -17,6 +17,8 @@ import (
 )
 
 var collection *mongo.Collection
+var bookAuthorCollection *mongo.Collection
+var bookListCollection *mongo.Collection
 
 func init() {
 	err := godotenv.Load(".env")
@@ -36,8 +38,12 @@ func init() {
 
 	dbName := os.Getenv("DBNAME")
     colName := os.Getenv("COLNAME")
+    colName2 := os.Getenv("COLNAME2")
+    colName3 := os.Getenv("COLNAME3")
 
 	collection = client.Database(dbName).Collection(colName)
+    bookListCollection = client.Database(dbName).Collection(colName2)
+    bookAuthorCollection = client.Database(dbName).Collection(colName3)
 
 	fmt.Println("Collection istance is ready")
 }
@@ -70,58 +76,98 @@ func updateAuthor(authorId string, author model.Author) {
 
 // delete author
 func deleteAuthor(authorId string) {
-	id, _ := primitive.ObjectIDFromHex(authorId)
-	filter := bson.M{"_id": id}
+    id, _ := primitive.ObjectIDFromHex(authorId)
+    filter := bson.M{"_id": id}
 
-	result, err := collection.DeleteOne(context.Background(), filter)
+    // Get the author's books from the bookAuthor table
+    bookAuthorFilter := bson.M{"author": id}
+    cursor, err := bookAuthorCollection.Find(context.Background(), bookAuthorFilter)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    var bookIds []primitive.ObjectID
+    for cursor.Next(context.Background()) {
+        var bookAuthor model.BookAuthor
+        cursor.Decode(&bookAuthor)
+        bookIds = append(bookIds, bookAuthor.Book)
+    }
 
-	fmt.Println("Deleted a single document: ", result.DeletedCount)
+    result, err := collection.DeleteOne(context.Background(), filter)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Deleted a single document from authors: ", result.DeletedCount)
+
+    bookAuthorResult, err := bookAuthorCollection.DeleteMany(context.Background(), bookAuthorFilter)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Deleted documents from bookAuthor: ", bookAuthorResult.DeletedCount)
+
+    readListFilter := bson.M{"book": bson.M{"$in": bookIds}}
+    readListResult, err := collection.DeleteMany(context.Background(), readListFilter)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Deleted documents from readList: ", readListResult.DeletedCount)
+
+    bookFilter := bson.M{"_id": bson.M{"$in": bookIds}}
+    bookResult, err := bookListCollection.DeleteMany(context.Background(), bookFilter)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Deleted documents from bookList: ", bookResult.DeletedCount)
 }
 
 // get author and return
-func getAuthor(authorId string) (model.AuthorWithBooks, error) {
-    var author model.AuthorWithBooks
+func getAuthor(authorID string) (model.AuthorWithBooks, error) {
+    var authorWithBooks model.AuthorWithBooks
 
-    id, err := primitive.ObjectIDFromHex(authorId)
+    id, err := primitive.ObjectIDFromHex(authorID)
     if err != nil {
-        return author, err
+        return authorWithBooks, err
     }
 
     pipeline := []bson.M{
         {"$match": bson.M{"_id": id}},
         {"$lookup": bson.M{
-            "from":         "bookList",
+            "from":         "bookAuthor",
             "localField":   "_id",
             "foreignField": "author",
-            "as":           "booksInfo",
+            "as":           "authorBookRelations",
+        }},
+        {"$lookup": bson.M{
+            "from":         "bookList",
+            "localField":   "authorBookRelations.book",
+            "foreignField": "_id",
+            "as":           "books",
         }},
         {"$project": bson.M{
             "_id":   1,
             "name":  1,
-            "books": bson.M{"$map": bson.M{"input": "$booksInfo", "as": "book", "in": bson.M{"title": "$$book.title"}}},
+            "books": bson.M{"$ifNull": []interface{}{
+                bson.M{"$map": bson.M{
+                    "input": "$books",
+                    "as":    "book",
+                    "in": bson.M{"title": "$$book.title"},
+                }},
+                []model.BookInfo{},
+            }},
         }},
     }
 
     cursor, err := collection.Aggregate(context.Background(), pipeline)
     if err != nil {
-        return author, err
+        log.Fatal(err)
     }
 
     if cursor.Next(context.Background()) {
-        if err := cursor.Decode(&author); err != nil {
-            return author, err
-        }
+        cursor.Decode(&authorWithBooks)
     }
 
-    fmt.Println("Found a single document: ", author)
-
-    return author, nil
+    return authorWithBooks, nil
 }
-
 
 // get all authors and return
 func getAllAuthors() []model.AuthorWithBooks {
@@ -129,15 +175,28 @@ func getAllAuthors() []model.AuthorWithBooks {
 
     pipeline := []bson.M{
         {"$lookup": bson.M{
-            "from":         "bookList",
+            "from":         "bookAuthor",
             "localField":   "_id",
             "foreignField": "author",
-            "as":           "booksInfo",
+            "as":           "authorBookRelations",
+        }},
+        {"$lookup": bson.M{
+            "from":         "bookList",
+            "localField":   "authorBookRelations.book",
+            "foreignField": "_id",
+            "as":           "books",
         }},
         {"$project": bson.M{
             "_id":   1,
             "name":  1,
-            "books": bson.M{"$map": bson.M{"input": "$booksInfo", "as": "book", "in": bson.M{"title": "$$book.title"}}},
+            "books": bson.M{"$ifNull": []interface{}{
+                bson.M{"$map": bson.M{
+                    "input": "$books",
+                    "as":    "book",
+                    "in": bson.M{"title": "$$book.title"},
+                }},
+                []model.BookInfo{},
+            }},
         }},
     }
 
